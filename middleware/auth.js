@@ -102,13 +102,18 @@ const optionalAuth = async (req, res, next) => {
 // No session-based authentication needed - JWT only
 
 // Generate JWT token
-const generateToken = (userId, sessionId = null, expiresIn = '24h') => {
+const generateToken = (userId, sessionId = null, expiresIn = null) => {
   const payload = { userId };
   if (sessionId) {
     payload.sessionId = sessionId;
   }
   
-  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn });
+  // If expiresIn is null, the token will never expire
+  if (expiresIn) {
+    return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn });
+  } else {
+    return jwt.sign(payload, process.env.JWT_SECRET);
+  }
 };
 
 // Generate refresh token (longer expiry)
