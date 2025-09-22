@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OTP Authenticator</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>">
+</head>
+<body>
+    <!-- Authentication Overlay -->
+    <div class="auth-overlay" id="authOverlay">
+        <div class="auth-modal">
+            <div class="auth-tabs">
+                <button class="auth-tab active" data-tab="login">Login</button>
+                <button class="auth-tab" data-tab="register">Register</button>
+            </div>
+            
+            <!-- Login Form -->
+            <div class="auth-form" id="loginForm">
+                <h2>Welcome Back</h2>
+                <form id="loginFormSubmit">
+                    <div class="form-group">
+                        <label for="loginEmail">Email or Username</label>
+                        <input type="text" id="loginEmail" name="login" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="loginPassword">Password</label>
+                        <input type="password" id="loginPassword" name="password" required>
+                    </div>
+                    <div class="form-group checkbox">
+                        <input type="checkbox" id="rememberMe" name="rememberMe">
+                        <label for="rememberMe">Remember me</label>
+                    </div>
+                    <button type="submit" class="btn-primary">Login</button>
+                </form>
+                <div class="auth-error" id="loginError" style="display: none;"></div>
+            </div>
+            
+            <!-- Register Form -->
+            <div class="auth-form" id="registerForm" style="display: none;">
+                <h2>Create Account</h2>
+                <form id="registerFormSubmit">
+                    <div class="form-group">
+                        <label for="registerUsername">Username</label>
+                        <input type="text" id="registerUsername" name="username" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="registerEmail">Email</label>
+                        <input type="email" id="registerEmail" name="email" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="registerPassword">Password</label>
+                        <input type="password" id="registerPassword" name="password" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="registerFirstName">First Name (Optional)</label>
+                        <input type="text" id="registerFirstName" name="firstName">
+                    </div>
+                    <div class="form-group">
+                        <label for="registerLastName">Last Name (Optional)</label>
+                        <input type="text" id="registerLastName" name="lastName">
+                    </div>
+                    <button type="submit" class="btn-primary">Register</button>
+                </form>
+                <div class="auth-error" id="registerError" style="display: none;"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <header>
+            <div class="header-content">
+                <div class="header-left">
+                    <h1>🔐 OTP Authenticator</h1>
+                    <p class="subtitle">Secure time-based authentication codes</p>
+                </div>
+                <div class="header-right" id="userMenu" style="display: none;">
+                    <div class="user-info">
+                        <span id="userName">User</span>
+                        <button class="btn-secondary" id="logoutBtn">Logout</button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <main>
+            <!-- My OTP Codes Section -->
+            <section class="my-codes-section" id="myCodesSection" style="display: none;">
+                <div class="section-header">
+                    <h3>📱 My OTP Codes</h3>
+                    <div class="section-controls">
+                        <input type="text" id="searchCodes" placeholder="Search codes..." class="search-input">
+                        <button id="refreshCodesBtn" class="btn-secondary">🔄 Refresh</button>
+                    </div>
+                </div>
+                <div id="myCodesContent" class="codes-grid"></div>
+                <div id="myCodesEmpty" class="empty-state" style="display: none;">
+                    <div class="empty-icon">📝</div>
+                    <h4>No OTP codes yet</h4>
+                    <p>Upload your first QR code to get started!</p>
+                </div>
+            </section>
+
+            <!-- Upload Section -->
+            <section class="upload-section">
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-content">
+                        <div class="upload-icon">📱</div>
+                        <h3>Upload QR Code Image</h3>
+                        <p>Drag and drop your QR code image here, or click to select</p>
+                        <input type="file" id="fileInput" accept="image/*" style="display: none;">
+                        <button class="upload-btn" onclick="document.getElementById('fileInput').click()">
+                            Choose File
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="upload-info">
+                    <p><strong>Supported formats:</strong> JPEG, PNG, GIF, WebP</p>
+                    <p><strong>Maximum size:</strong> 10MB</p>
+                </div>
+            </section>
+
+            <!-- Camera Section -->
+            <section class="camera-section">
+                <h3>📷 Or use your camera</h3>
+                <div class="camera-controls">
+                    <button id="startCamera" class="camera-btn">Start Camera</button>
+                    <button id="capturePhoto" class="camera-btn" style="display: none;">Capture Photo</button>
+                    <button id="stopCamera" class="camera-btn secondary" style="display: none;">Stop Camera</button>
+                </div>
+                <div id="cameraContainer" style="display: none;">
+                    <video id="cameraVideo" autoplay playsinline></video>
+                    <canvas id="captureCanvas" style="display: none;"></canvas>
+                </div>
+            </section>
+
+            <!-- Results Section -->
+            <section class="results-section" id="resultsSection" style="display: none;">
+                <h3>📊 Scan Results</h3>
+                <div id="resultsContent"></div>
+                <div class="result-actions">
+                    <button id="saveCodeBtn" class="btn-primary" style="display: none;">💾 Save to My Codes</button>
+                    <button class="btn-secondary" onclick="clearResults()">Clear Results</button>
+                </div>
+            </section>
+
+            <!-- Loading Section -->
+            <section class="loading-section" id="loadingSection" style="display: none;">
+                <div class="loading-spinner"></div>
+                <p>Processing QR code...</p>
+            </section>
+
+            <!-- Error Section -->
+            <section class="error-section" id="errorSection" style="display: none;">
+                <div class="error-content">
+                    <div class="error-icon">❌</div>
+                    <h3>Error</h3>
+                    <p id="errorMessage"></p>
+                    <button class="retry-btn" onclick="clearResults()">Try Again</button>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>Built with ❤️ using Node.js, Express, and jsQR</p>
+            <div class="footer-links">
+                <a href="/api">API Info</a> | 
+                <a href="/health">Health Check</a>
+            </div>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

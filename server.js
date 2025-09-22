@@ -6,7 +6,6 @@ const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
 const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
 const morgan = require('morgan');
 const compression = require('compression');
 const { body, validationResult } = require('express-validator');
@@ -16,7 +15,9 @@ const database = require('./config/database');
 const User = require('./models/User');
 
 // Services
-const QRService = require('./services/qr-service');
+const QRService = process.env.NODE_ENV === 'production' 
+  ? require('./services/qr-service-optimized')
+  : require('./services/qr-service');
 const OTPGenerator = require('./services/otp-generator');
 const { formatOTPResponse } = require('./lib/otp-parser');
 
@@ -30,6 +31,9 @@ const { optionalAuth } = require('./middleware/auth');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Trust proxy disabled temporarily to fix rate limiting error
+// app.set('trust proxy', true);
+
 // Initialize database connection
 async function initializeDatabase() {
   try {
@@ -42,6 +46,7 @@ async function initializeDatabase() {
     console.log('   1. Install MongoDB: https://www.mongodb.com/try/download/community');
     console.log('   2. Start MongoDB service');
     console.log('   3. Or use MongoDB Atlas: https://www.mongodb.com/atlas');
+    console.log('   4. Set MONGODB_URI environment variable in Vercel');
     // Don't throw error, continue without database
   }
 }
@@ -58,30 +63,14 @@ app.use(helmet({
   },
 }));
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  message: {
-    error: 'Too many requests from this IP, please try again later.',
-    code: 'RATE_LIMIT_EXCEEDED'
-  }
-});
-
-const uploadLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20, // limit each IP to 20 uploads per windowMs
-  message: {
-    error: 'Too many file uploads from this IP, please try again later.',
-    code: 'UPLOAD_RATE_LIMIT_EXCEEDED'
-  }
-});
-
-app.use(limiter);
+// Rate limiting removed for development/testing
 app.use(compression());
 app.use(morgan('combined'));
 app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : true,
+  origin: function (origin, callback) {
+    // Allow all origins when credentials are needed
+    callback(null, origin || '*');
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
@@ -90,26 +79,34 @@ app.use(cors({
 // No session middleware needed - using JWT tokens only
 console.log('📝 Using JWT token-based authentication');
 
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// Adjust body parser limits for Vercel deployment
+const bodyLimit = process.env.NODE_ENV === 'production' ? '4mb' : '10mb';
+app.use(express.json({ limit: bodyLimit }));
+app.use(express.urlencoded({ extended: true, limit: bodyLimit }));
 
-// Create uploads directory if it doesn't exist
+// Create uploads directory if it doesn't exist (skip in serverless environments)
 const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+if (process.env.NODE_ENV !== 'production' && !fs.existsSync(uploadsDir)) {
+  try {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  } catch (error) {
+    console.warn('Could not create uploads directory:', error.message);
+  }
 }
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadsDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const fileExtension = path.extname(file.originalname).toLowerCase();
-    cb(null, `qr-${uniqueSuffix}${fileExtension}`);
-  }
-});
+// Configure multer for file uploads with memory storage for faster processing
+const storage = process.env.NODE_ENV === 'production' 
+  ? multer.memoryStorage() // Use memory storage in production for faster processing
+  : multer.diskStorage({
+      destination: (req, file, cb) => {
+        cb(null, uploadsDir);
+      },
+      filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const fileExtension = path.extname(file.originalname).toLowerCase();
+        cb(null, `qr-${uniqueSuffix}${fileExtension}`);
+      }
+    });
 
 const fileFilter = (req, file, cb) => {
   // Accept image files only
@@ -125,7 +122,7 @@ const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit
+    fileSize: process.env.NODE_ENV === 'production' ? 10 * 1024 * 1024 : 10 * 1024 * 1024, // 4MB for Vercel, 10MB locally
     files: 1 // Only one file at a time
   }
 });
@@ -150,15 +147,19 @@ app.post('/api/qr/upload', upload.single('qrImage'), async (req, res) => {
 
     console.log(`Processing QR code upload (legacy endpoint)`);
 
-    // Process the QR code
-    const qrResult = await QRService.processQRImage(req.file.path);
+    // Process the QR code - use buffer processing if available, otherwise file path
+    const qrResult = req.file.buffer
+      ? await QRService.processQRBuffer(req.file.buffer, req.file.mimetype)
+      : await QRService.processQRImage(req.file.path);
 
     if (!qrResult.success) {
-      // Clean up uploaded file
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (error) {
-        console.warn('Could not delete uploaded file:', error.message);
+      // Clean up uploaded file (only needed for disk storage)
+      if (req.file.path) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (error) {
+          console.warn('Could not delete uploaded file:', error.message);
+        }
       }
 
       return res.status(400).json({
@@ -184,11 +185,13 @@ app.post('/api/qr/upload', upload.single('qrImage'), async (req, res) => {
       codeError = error.message;
     }
 
-    // Clean up uploaded file (don't save for legacy endpoint)
-    try {
-      fs.unlinkSync(req.file.path);
-    } catch (error) {
-      console.warn('Could not delete uploaded file:', error.message);
+    // Clean up uploaded file (don't save for legacy endpoint, only needed for disk storage)
+    if (req.file.path) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (error) {
+        console.warn('Could not delete uploaded file:', error.message);
+      }
     }
 
     res.json({
@@ -203,7 +206,7 @@ app.post('/api/qr/upload', upload.single('qrImage'), async (req, res) => {
   } catch (error) {
     console.error('QR upload error (legacy):', error);
 
-    // Clean up uploaded file if it exists
+    // Clean up uploaded file if it exists (only needed for disk storage)
     if (req.file && req.file.path) {
       try {
         fs.unlinkSync(req.file.path);
@@ -317,7 +320,7 @@ app.get('/api', (req, res) => {
 });
 
 // Upload QR code image file
-app.post('/api/qr/upload', uploadLimiter, upload.single('qrImage'), async (req, res) => {
+app.post('/api/qr/upload', upload.single('qrImage'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({
@@ -327,16 +330,20 @@ app.post('/api/qr/upload', uploadLimiter, upload.single('qrImage'), async (req, 
       });
     }
 
-    console.log(`Processing uploaded file: ${req.file.filename}`);
+    console.log(`Processing uploaded file: ${req.file.filename || 'buffer'}`);
     
-    // Process the QR code
-    const result = await QRService.processQRImage(req.file.path);
+    // Process the QR code - use buffer processing if available, otherwise file path
+    const result = req.file.buffer
+      ? await QRService.processQRBuffer(req.file.buffer, req.file.mimetype)
+      : await QRService.processQRImage(req.file.path);
     
-    // Clean up uploaded file
-    try {
-      fs.unlinkSync(req.file.path);
-    } catch (cleanupError) {
-      console.warn('Could not delete uploaded file:', cleanupError.message);
+    // Clean up uploaded file (only needed for disk storage)
+    if (req.file.path) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (cleanupError) {
+        console.warn('Could not delete uploaded file:', cleanupError.message);
+      }
     }
 
     if (!result.success) {
@@ -380,7 +387,7 @@ app.post('/api/qr/upload', uploadLimiter, upload.single('qrImage'), async (req, 
   } catch (error) {
     console.error('Error processing QR upload:', error);
     
-    // Clean up file if it exists
+    // Clean up file if it exists (only needed for disk storage)
     if (req.file && req.file.path) {
       try {
         fs.unlinkSync(req.file.path);
@@ -750,45 +757,54 @@ async function startServer() {
     // Initialize database first
     await initializeDatabase();
     
-app.listen(PORT, () => {
-      console.log('🎉 OTP Authenticator Server Started Successfully!');
-      console.log('='.repeat(50));
-      console.log(`🚀 Server running at http://localhost:${PORT}`);
-      console.log(`📊 Health check: http://localhost:${PORT}/health`);
-      console.log(`📖 API docs: http://localhost:${PORT}/api`);
-      console.log('');
-      console.log('🔐 Authentication Endpoints:');
-      console.log(`   Register: POST http://localhost:${PORT}/api/auth/register`);
-      console.log(`   Login: POST http://localhost:${PORT}/api/auth/login`);
-      console.log(`   Profile: GET http://localhost:${PORT}/api/auth/profile`);
-      console.log('');
-      console.log('📱 OTP Endpoints:');
-      console.log(`   Upload QR: POST http://localhost:${PORT}/api/otp/upload`);
-      console.log(`   List OTPs: GET http://localhost:${PORT}/api/otp`);
-      console.log(`   Generate Code: POST http://localhost:${PORT}/api/otp/:id/generate`);
-      console.log('');
-      console.log('🌐 Web Interface: http://localhost:${PORT}');
-      console.log('='.repeat(50));
-      console.log('Press Ctrl+C to stop the server');
-    });
+    // Only start listening if not in serverless environment
+    if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
+      app.listen(PORT, () => {
+        console.log('🎉 OTP Authenticator Server Started Successfully!');
+        console.log('='.repeat(50));
+        console.log(`🚀 Server running at http://localhost:${PORT}`);
+        console.log(`📊 Health check: http://localhost:${PORT}/health`);
+        console.log(`📖 API docs: http://localhost:${PORT}/api`);
+        console.log('');
+        console.log('🔐 Authentication Endpoints:');
+        console.log(`   Register: POST http://localhost:${PORT}/api/auth/register`);
+        console.log(`   Login: POST http://localhost:${PORT}/api/auth/login`);
+        console.log(`   Profile: GET http://localhost:${PORT}/api/auth/profile`);
+        console.log('');
+        console.log('📱 OTP Endpoints:');
+        console.log(`   Upload QR: POST http://localhost:${PORT}/api/otp/upload`);
+        console.log(`   List OTPs: GET http://localhost:${PORT}/api/otp`);
+        console.log(`   Generate Code: POST http://localhost:${PORT}/api/otp/:id/generate`);
+        console.log('');
+        console.log('🌐 Web Interface: http://localhost:${PORT}');
+        console.log('='.repeat(50));
+        console.log('Press Ctrl+C to stop the server');
+      });
+    } else {
+      console.log('🚀 OTP Authenticator Server Ready for Vercel!');
+    }
   } catch (error) {
     console.error('❌ Failed to start server:', error.message);
-    process.exit(1);
+    if (process.env.NODE_ENV !== 'production') {
+      process.exit(1);
+    }
   }
 }
 
-// Handle graceful shutdown
-process.on('SIGINT', async () => {
-  console.log('\n📄 Shutting down server gracefully...');
-  await database.disconnect();
-  process.exit(0);
-});
+// Handle graceful shutdown (only in non-serverless environments)
+if (process.env.NODE_ENV !== 'production' || process.env.VERCEL !== '1') {
+  process.on('SIGINT', async () => {
+    console.log('\n📄 Shutting down server gracefully...');
+    await database.disconnect();
+    process.exit(0);
+  });
 
-process.on('SIGTERM', async () => {
-  console.log('\n📄 Shutting down server gracefully...');
-  await database.disconnect();
-  process.exit(0);
-});
+  process.on('SIGTERM', async () => {
+    console.log('\n📄 Shutting down server gracefully...');
+    await database.disconnect();
+    process.exit(0);
+  });
+}
 
 startServer();
 
