@@ -115,9 +115,7 @@ userSchema.virtual('displayName').get(function() {
   return this.username;
 });
 
-// Indexes for performance
-userSchema.index({ username: 1 });
-userSchema.index({ email: 1 });
+// Indexes for performance (username and email indexes are created by unique: true)
 userSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model('User', userSchema);

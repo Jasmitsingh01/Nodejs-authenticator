@@ -1,6 +1,5 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
-const rateLimit = require('express-rate-limit');
 const User = require('../models/User');
 const Session = require('../models/Session');
 const { 
@@ -11,17 +10,6 @@ const {
 } = require('../middleware/auth');
 
 const router = express.Router();
-
-// Rate limiting for auth endpoints (relaxed for development)
-const authLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000, // 5 minutes
-  max: 20, // limit each IP to 20 requests per windowMs
-  message: {
-    success: false,
-    error: 'Too many authentication attempts, please try again later.',
-    code: 'AUTH_RATE_LIMIT'
-  }
-});
 
 // Register new user
 router.post('/register', [
@@ -101,7 +89,7 @@ router.post('/register', [
 
     await session.save();
 
-    // Generate tokens
+    // Generate tokens (access token never expires)
     const accessToken = generateToken(user._id, session._id);
     const refreshToken = generateRefreshToken(user._id, session._id);
 
@@ -123,7 +111,7 @@ router.post('/register', [
       tokens: {
         accessToken,
         refreshToken,
-        expiresIn: '24h'
+        expiresIn: 'never'
       }
     });
 
@@ -138,7 +126,7 @@ router.post('/register', [
 });
 
 // Login user
-router.post('/login', authLimiter, [
+router.post('/login', [
   body('login')
     .notEmpty()
     .withMessage('Username or email is required'),
@@ -199,9 +187,8 @@ router.post('/login', authLimiter, [
 
     await session.save();
 
-    // Generate tokens
-    const tokenExpiry = rememberMe ? '7d' : '24h';
-    const accessToken = generateToken(user._id, session._id, tokenExpiry);
+    // Generate tokens (access token never expires)
+    const accessToken = generateToken(user._id, session._id);
     const refreshToken = generateRefreshToken(user._id, session._id);
 
     // Update user login info
@@ -223,7 +210,7 @@ router.post('/login', authLimiter, [
       tokens: {
         accessToken,
         refreshToken,
-        expiresIn: tokenExpiry
+        expiresIn: 'never'
       },
       session: {
         id: session._id,

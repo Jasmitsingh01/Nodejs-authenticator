@@ -5,28 +5,32 @@ const fs = require('fs');
 const sharp = require('sharp');
 const { body, query, validationResult } = require('express-validator');
 const OTPEntry = require('../models/OTPEntry');
-const QRService = require('../services/qr-service');
+const QRService = process.env.NODE_ENV === 'production' 
+  ? require('../services/qr-service-optimized')
+  : require('../services/qr-service');
 const OTPGenerator = require('../services/otp-generator');
 const { parseOTPAuth, formatOTPResponse } = require('../lib/otp-parser');
 const { authenticateToken } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Configure multer for QR code image uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, '../uploads/qr-codes', req.userId.toString());
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const fileExtension = path.extname(file.originalname).toLowerCase();
-    cb(null, `qr-${uniqueSuffix}${fileExtension}`);
-  }
-});
+// Configure multer for QR code image uploads with optimizations
+const storage = process.env.NODE_ENV === 'production' 
+  ? multer.memoryStorage() // Use memory storage in production for faster processing
+  : multer.diskStorage({
+      destination: (req, file, cb) => {
+        const uploadDir = path.join(__dirname, '../uploads/qr-codes', req.userId.toString());
+        if (!fs.existsSync(uploadDir)) {
+          fs.mkdirSync(uploadDir, { recursive: true });
+        }
+        cb(null, uploadDir);
+      },
+      filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const fileExtension = path.extname(file.originalname).toLowerCase();
+        cb(null, `qr-${uniqueSuffix}${fileExtension}`);
+      }
+    });
 
 const upload = multer({
   storage: storage,
@@ -39,7 +43,7 @@ const upload = multer({
     }
   },
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit
+    fileSize: process.env.NODE_ENV === 'production' ? 4 * 1024 * 1024 : 10 * 1024 * 1024, // 4MB for Vercel, 10MB locally
     files: 1
   }
 });
@@ -60,15 +64,19 @@ router.post('/upload', upload.single('qrImage'), async (req, res) => {
 
     console.log(`Processing QR code upload for user ${req.userId}`);
 
-    // Process the QR code
-    const qrResult = await QRService.processQRImage(req.file.path);
+    // Process the QR code - use buffer processing if available, otherwise file path
+    const qrResult = req.file.buffer
+      ? await QRService.processQRBuffer(req.file.buffer, req.file.mimetype)
+      : await QRService.processQRImage(req.file.path);
 
     if (!qrResult.success) {
-      // Clean up uploaded file
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (error) {
-        console.warn('Could not delete uploaded file:', error.message);
+      // Clean up uploaded file (only needed for disk storage)
+      if (req.file.path) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (error) {
+          console.warn('Could not delete uploaded file:', error.message);
+        }
       }
 
       return res.status(400).json({
@@ -81,18 +89,22 @@ router.post('/upload', upload.single('qrImage'), async (req, res) => {
     // Parse OTP data
     const otpData = qrResult.data;
     
-    // Generate optimized QR code image thumbnail
-    const thumbnailPath = req.file.path.replace(/\.[^.]+$/, '_thumb.webp');
-    try {
-      await sharp(req.file.path)
-        .resize(200, 200, { 
-          fit: 'inside',
-          withoutEnlargement: true 
-        })
-        .webp({ quality: 80 })
-        .toFile(thumbnailPath);
-    } catch (error) {
-      console.warn('Could not create thumbnail:', error.message);
+    // Generate optimized QR code image thumbnail (only in development with disk storage)
+    let thumbnailPath = null;
+    if (req.file.path) {
+      thumbnailPath = req.file.path.replace(/\.[^.]+$/, '_thumb.webp');
+      try {
+        await sharp(req.file.path)
+          .resize(200, 200, { 
+            fit: 'inside',
+            withoutEnlargement: true 
+          })
+          .webp({ quality: 80 })
+          .toFile(thumbnailPath);
+      } catch (error) {
+        console.warn('Could not create thumbnail:', error.message);
+        thumbnailPath = null;
+      }
     }
 
     // Check if user already has this OTP entry
@@ -147,12 +159,12 @@ router.post('/upload', upload.single('qrImage'), async (req, res) => {
       },
       originalUrl: otpData.originalUrl,
       qrCodeImage: {
-        filename: req.file.filename,
+        filename: req.file.filename || `qr-${Date.now()}-${Math.round(Math.random() * 1E9)}`,
         originalName: req.file.originalname,
         mimetype: req.file.mimetype,
         size: req.file.size,
-        path: req.file.path,
-        thumbnailPath: fs.existsSync(thumbnailPath) ? thumbnailPath : null
+        path: req.file.path || null, // Will be null for memory storage
+        thumbnailPath: thumbnailPath && fs.existsSync(thumbnailPath) ? thumbnailPath : null
       }
     });
 

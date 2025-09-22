@@ -1,8 +1,24 @@
-/*.env
-/node_modules
+# Environment files
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+
+# Dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# Production
 /dist
 /build
+
+# Testing
 /coverage
+.nyc_output
+
+# Logs
 /logs
 /temp
 /uploads

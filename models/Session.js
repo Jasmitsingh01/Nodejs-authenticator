@@ -55,9 +55,7 @@ sessionSchema.methods.deactivate = function() {
   return this.save();
 };
 
-// Indexes
-sessionSchema.index({ sessionToken: 1 });
+// Indexes (sessionToken and expiresAt indexes are created by unique: true and expireAfterSeconds)
 sessionSchema.index({ userId: 1, isActive: 1 });
-sessionSchema.index({ expiresAt: 1 });
 
 module.exports = mongoose.model('Session', sessionSchema);
