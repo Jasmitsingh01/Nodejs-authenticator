@@ -2,11 +2,11 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const Session = require('../models/Session');
-const { 
-  generateToken, 
-  generateRefreshToken, 
-  parseDeviceInfo, 
-  authenticateToken 
+const {
+  generateToken,
+  generateRefreshToken,
+  parseDeviceInfo,
+  authenticateToken
 } = require('../middleware/auth');
 
 const router = express.Router();
@@ -58,8 +58,8 @@ router.post('/register', [
     if (existingUser) {
       return res.status(409).json({
         success: false,
-        error: existingUser.username === username 
-          ? 'Username already exists' 
+        error: existingUser.username === username
+          ? 'Username already exists'
           : 'Email already registered',
         code: 'USER_EXISTS'
       });
@@ -177,7 +177,7 @@ router.post('/login', [
     // Create session
     const deviceInfo = parseDeviceInfo(req.get('User-Agent'), req.ip);
     const expiryHours = rememberMe ? 24 * 7 : 24; // 7 days if remember me, otherwise 24 hours
-    
+
     const session = new Session({
       userId: user._id,
       sessionToken: generateToken(user._id),
@@ -287,30 +287,6 @@ router.post('/refresh', [
     });
   }
 });
-
-// Logout user
-router.post('/logout', authenticateToken, async (req, res) => {
-  try {
-    // Deactivate current session
-    if (req.session) {
-      await req.session.deactivate();
-    }
-
-    res.json({
-      success: true,
-      message: 'Logout successful'
-    });
-
-  } catch (error) {
-    console.error('Logout error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Logout failed',
-      code: 'LOGOUT_ERROR'
-    });
-  }
-});
-
 // Get current user profile
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
@@ -429,7 +405,7 @@ router.get('/sessions', authenticateToken, async (req, res) => {
         location: session.location,
         lastActivity: session.lastActivity,
         expiresAt: session.expiresAt,
-        isCurrent: req.session && session._id.equals(req.session._id)
+        isCurrent: req.sessionRecord && session._id.equals(req.sessionRecord._id)
       }))
     });
 
@@ -447,28 +423,18 @@ router.get('/sessions', authenticateToken, async (req, res) => {
 router.delete('/sessions/:sessionId', authenticateToken, async (req, res) => {
   try {
     const { sessionId } = req.params;
-    
+
     const session = await Session.findOne({
       _id: sessionId,
       userId: req.userId
     });
-
-    if (!session) {
-      return res.status(404).json({
-        success: false,
-        error: 'Session not found',
-        code: 'SESSION_NOT_FOUND'
-      });
-    }
-
-    await session.deactivate();
-
-    res.json({
-      success: true,
-      message: 'Session revoked successfully'
+    res.status(500).json({
+      success: false,
+      error: 'Failed to revoke session',
+      code: 'REVOKE_ERROR'
     });
-
-  } catch (error) {
+  }
+  catch (error) {
     console.error('Session revoke error:', error);
     res.status(500).json({
       success: false,
@@ -476,6 +442,8 @@ router.delete('/sessions/:sessionId', authenticateToken, async (req, res) => {
       code: 'REVOKE_ERROR'
     });
   }
+
 });
 
-module.exports = router;
+module.exports = router
+
